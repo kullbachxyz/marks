@@ -40,7 +40,7 @@ SHORTCUTS_SEGMENTS = [
     ("/", True),
     (" Search  ", False),
     ("f", True),
-    (" Folder  ", False),
+    (" Filter  ", False),
     ("a", True),
     (" Add  ", False),
     ("e", True),
@@ -49,7 +49,7 @@ SHORTCUTS_SEGMENTS = [
     (" Move folder  ", False),
     ("o", True),
     (" Open  ", False),
-    ("D/dd", True),
+    ("d", True),
     (" Delete  ", False),
     ("q", True),
     (" Quit", False),
@@ -144,15 +144,77 @@ def draw_shortcuts(stdscr, y: int, width: int, highlight_attr: int) -> None:
 
 
 def draw_segments_line(stdscr, y: int, width: int, segments: List[Tuple[str, bool]], key_attr: int) -> None:
-    col = 0
-    max_width = max(1, width)
-    for text, highlighted in segments:
-        if col >= max_width:
-            break
-        chunk = text[: max_width - col]
+    if not segments:
+        return
+    cols = max(1, min(5, len(segments)))
+    cell_width = max(1, width // cols)
+    for idx, (text, highlighted) in enumerate(segments[:cols]):
+        start_x = idx * cell_width
         attr = key_attr if highlighted else curses.A_NORMAL
-        stdscr.addnstr(y, col, chunk, max_width - col, attr)
-        col += len(chunk)
+        stdscr.addnstr(y, start_x, text[: cell_width - 1], cell_width - 1, attr)
+
+
+def command_rows(segments: List[Tuple[str, bool]]) -> List[List[Tuple[str, bool, str]]]:
+    commands: List[Tuple[str, bool, str]] = []
+    i = 0
+    while i < len(segments):
+        key, key_hl = segments[i]
+        desc = segments[i + 1][0].strip() if i + 1 < len(segments) else ""
+        if key or desc:
+            commands.append((key.strip(), key_hl, desc))
+        i += 2
+    while len(commands) < 10:
+        commands.append(("", False, ""))
+    return [commands[:5], commands[5:10]]
+
+
+def draw_menu_rows(
+    stdscr,
+    footer_y: int,
+    width: int,
+    rows: List[List[Tuple[str, bool, str]]],
+    key_attr: int,
+) -> None:
+    cell_width = max(1, width // 5)
+    for idx_row, row in enumerate(rows):
+        y = footer_y + 1 + idx_row
+        stdscr.move(y, 0)
+        stdscr.clrtoeol()
+        for idx_col, (key, highlighted, desc) in enumerate(row[:5]):
+            start_x = idx_col * cell_width
+            rem = cell_width - 1
+            col = start_x
+            if key:
+                chunk = key[: rem]
+                attr = key_attr if highlighted else curses.A_NORMAL
+                stdscr.addnstr(y, col, chunk, rem, attr)
+                col += len(chunk)
+                rem -= len(chunk)
+            if rem > 0 and desc:
+                stdscr.addnstr(y, col, " ", 1)
+                col += 1
+                rem -= 1
+                stdscr.addnstr(y, col, desc[: rem], rem)
+
+
+def draw_footer(
+    stdscr,
+    footer_y: int,
+    width: int,
+    status: str,
+    rows: List[List[Tuple[str, bool]]],
+    key_attr: int,
+) -> None:
+    stdscr.hline(footer_y, 0, curses.ACS_HLINE, width)
+    line_offset = 1
+    if status:
+        stdscr.move(footer_y + line_offset, 0)
+        stdscr.clrtoeol()
+        stdscr.addnstr(footer_y + line_offset, 0, status[: width - 1], width - 1)
+        line_offset += 1
+    # Ensure exactly two rows; pad with empties if needed
+    normalized_rows = rows[:2] + [[] for _ in range(max(0, 2 - len(rows)))]
+    draw_menu_rows(stdscr, footer_y + line_offset - 1, width, normalized_rows, key_attr)
 
 
 def draw_box(stdscr, top: int, left: int, height: int, width: int, attr: int = curses.A_NORMAL) -> None:
@@ -179,27 +241,43 @@ def gather_folders(bookmarks: List[Dict[str, str]]) -> List[str]:
 def prompt_input(stdscr, prompt: str, default: str = "") -> str:
     curses.curs_set(1)
     h, w = stdscr.getmaxyx()
-    prompt_y = h - 2  # status line; keep shortcuts visible on last line
-    if prompt_y < 0:
+    label_y = h - 2
+    input_y = h - 1
+    if input_y < 0:
         curses.curs_set(0)
         return ""
-    stdscr.move(prompt_y, 0)
-    stdscr.clrtoeol()
+    for y in (label_y, input_y):
+        stdscr.move(y, 0)
+        stdscr.clrtoeol()
 
-    prompt_text = f"{prompt} "
-    stdscr.addnstr(prompt_y, 0, prompt_text, w - 1)
-    max_len = max(1, w - len(prompt_text) - 1)
+    prompt_label = f"{prompt}:"
+    try:
+        accent_attr = curses.color_pair(2) | curses.A_BOLD
+    except curses.error:
+        accent_attr = curses.A_BOLD
+    stdscr.addnstr(label_y, 0, prompt_label[: w - 1], w - 1, accent_attr)
+    max_len = max(3, w - 1)  # room for overflow markers
     buf = list(default)
     pos = len(buf)
+    view_start = 0
 
     while True:
-        display = "".join(buf)
-        stdscr.addnstr(prompt_y, len(prompt_text), display[: max_len], max_len)
-        # Clear any trailing characters from previous longer inputs
-        if len(display) < max_len:
-            stdscr.addnstr(prompt_y, len(prompt_text) + len(display), " " * (max_len - len(display)), max_len - len(display))
-        cursor_col = len(prompt_text) + min(pos, max_len - 1)
-        stdscr.move(prompt_y, cursor_col)
+        display_width = max_len - 2
+        if pos < view_start:
+            view_start = pos
+        elif pos > view_start + display_width:
+            view_start = pos - display_width
+        view_start = max(0, min(view_start, max(0, len(buf) - display_width)))
+
+        slice_text = "".join(buf[view_start : view_start + display_width])
+        left_marker = "<" if view_start > 0 else " "
+        right_marker = ">" if view_start + display_width < len(buf) else " "
+        render = f"{left_marker}{slice_text.ljust(display_width)}{right_marker}"
+        stdscr.addnstr(input_y, 0, render[: max_len], max_len)
+
+        cursor_col = 1 + min(pos - view_start, display_width)
+        cursor_col = min(cursor_col, max_len - 1)
+        stdscr.move(input_y, cursor_col)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -310,7 +388,11 @@ def draw_ui(
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     header_height = 3  # boxed header
-    footer_rows = 3  # separator + status + shortcuts
+    rows_for_menu = command_rows(SHORTCUTS_SEGMENTS) if shortcuts_visible else []
+    rows_count = len(rows_for_menu)
+    status_rows = 1 if status else 0
+    footer_rows = 1 + status_rows + rows_count
+    footer_rows = max(1, footer_rows)
     body_height = max(3, h - footer_rows - header_height)
     list_height = max(1, body_height - 2)
     list_width = max(20, int(w * 0.55))
@@ -359,13 +441,13 @@ def draw_ui(
                 attr = highlight_attr if focus_detail and i == detail_selected else curses.A_NORMAL
                 stdscr.addnstr(list_start_y + 1 + i, list_width + 1, line.ljust(detail_width - 2), detail_width - 2, attr)
 
-    stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
-    stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
     if shortcuts_visible:
-        draw_shortcuts(stdscr, footer_y + 2, w - 1, shortcut_attr)
+        draw_footer(stdscr, footer_y, w, status, rows_for_menu, shortcut_attr)
     else:
-        stdscr.move(footer_y + 2, 0)
-        stdscr.clrtoeol()
+        stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
+        for y in range(footer_y + 1, h):
+            stdscr.move(y, 0)
+            stdscr.clrtoeol()
     stdscr.refresh()
     return list_height, list_width
 
@@ -374,24 +456,25 @@ def draw_settings_screen(
     stdscr,
     colors: List[Tuple[int, str]],
     selected_idx: int,
-    accent_color: int,
+    accent_fg: int,
     status: str,
     highlight_attr: int,
     shortcut_attr: int,
     view: str,
 ) -> None:
     h, w = stdscr.getmaxyx()
-    footer_y = h - 3
-    segments = [("q", True), (" Quit  ", False), ("c", True), (" Color", False)]
+    footer_rows = 3
+    footer_y = h - footer_rows
+    segments = [
+        ("q", True),
+        (" Quit  ", False),
+        ("c", True),
+        (" Color  ", False),
+    ]
+    rows = command_rows(segments)
 
     # Update footer only
-    stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
-    stdscr.move(footer_y + 1, 0)
-    stdscr.clrtoeol()
-    stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
-    stdscr.move(footer_y + 2, 0)
-    stdscr.clrtoeol()
-    draw_segments_line(stdscr, footer_y + 2, w - 1, segments, shortcut_attr)
+    draw_footer(stdscr, footer_y, w, status, rows, shortcut_attr)
 
     if view != "colors":
         stdscr.refresh()
@@ -401,7 +484,7 @@ def draw_settings_screen(
     stdscr.erase()
     header_height = 3
     footer_rows = 3
-    body_height = max(4, h - footer_rows - header_height)
+    body_height = max(6, h - footer_rows - header_height)
     footer_y_full = h - footer_rows
 
     # Header
@@ -418,21 +501,21 @@ def draw_settings_screen(
     text_x = max(2, (w - len(title)) // 2)
     stdscr.addnstr(1, text_x, title[: max(0, w - text_x - 2)], max(0, w - text_x - 2), shortcut_attr)
 
-    # Body
+    # Body single list
     list_start_y = header_height
     draw_box(stdscr, list_start_y, 0, body_height, w, curses.A_NORMAL)
     bar_width = min(24, max(8, w // 6))
-    bar_start = max(4, (w - bar_width) // 2)
-    marker_x = max(1, bar_start - 4)
+    bar_start = max(6, (w - bar_width) // 2)
+    marker_x = max(2, bar_start - 6)
     max_rows = max(0, (body_height - 2) // 2)
     for idx, (code, name) in enumerate(colors[: max_rows]):
         y = list_start_y + 1 + idx * 2
-        marker = "[X]" if code == accent_color else "[ ]"
+        marker = "[X]" if code == accent_fg else "[ ]"
         attr = highlight_attr if idx == selected_idx else curses.A_NORMAL
         stdscr.addnstr(y, marker_x, marker, 3, attr)
         try:
-            pair_id = 20 + code
-            curses.init_pair(pair_id, curses.COLOR_BLACK, code)
+            pair_id = 50 + (code + 1 if code >= 0 else 0)
+            curses.init_pair(pair_id, curses.COLOR_BLACK, code if code >= 0 else -1)
             bar_attr = curses.color_pair(pair_id)
         except curses.error:
             bar_attr = curses.A_REVERSE
@@ -442,13 +525,20 @@ def draw_settings_screen(
         stdscr.addnstr(y, name_x, name[: max(0, w - name_x - 2)], max(0, w - name_x - 2), attr)
 
     # Footer for picker
+    picker_segments = [
+        ("q", True),
+        (" Quit  ", False),
+        ("SPC", True),
+        (" Select  ", False),
+        ("j/k", True),
+        (" Move", False),
+    ]
+    picker_rows = command_rows(picker_segments)
     stdscr.hline(footer_y_full, 0, curses.ACS_HLINE, w)
     stdscr.move(footer_y_full + 1, 0)
     stdscr.clrtoeol()
     stdscr.addnstr(footer_y_full + 1, 0, status[: w - 1], w - 1)
-    stdscr.move(footer_y_full + 2, 0)
-    stdscr.clrtoeol()
-    draw_segments_line(stdscr, footer_y_full + 2, w - 1, segments, shortcut_attr)
+    draw_menu_rows(stdscr, footer_y_full, w - 1, picker_rows, shortcut_attr)
     stdscr.refresh()
 
 
@@ -456,17 +546,13 @@ def main(stdscr):
     curses.curs_set(0)
     curses.use_default_colors()
     config = load_config()
-    accent_color = (
-        int(config.get("accent_color", 6))
-        if isinstance(config, dict)
-        else 6
-    )
+    accent_fg = int(config.get("accent_color", 6)) if isinstance(config, dict) else 6
     try:
-        curses.init_pair(1, curses.COLOR_BLACK, accent_color)
-        highlight_attr = curses.color_pair(1)
-        curses.init_pair(2, accent_color, -1)
+        curses.init_pair(1, accent_fg, -1)
+        highlight_attr = curses.color_pair(1) | curses.A_BOLD
+        curses.init_pair(2, accent_fg, -1)
         shortcut_attr = curses.color_pair(2) | curses.A_BOLD
-        curses.init_pair(3, accent_color, -1)
+        curses.init_pair(3, accent_fg, -1)
         focus_border_attr = curses.color_pair(3) | curses.A_BOLD
     except curses.error:
         highlight_attr = curses.A_REVERSE
@@ -488,50 +574,38 @@ def main(stdscr):
     settings_mode = False
     settings_view = "menu"
     settings_selected_idx = 0
-    available_colors = [(code, name) for code, name in TERM_COLORS if code < curses.COLORS]
+    available_colors = [(code, name) for code, name in TERM_COLORS if code < curses.COLORS or code == -1]
     if available_colors:
         try:
-            settings_selected_idx = [code for code, _ in available_colors].index(accent_color)
+            settings_selected_idx = [code for code, _ in available_colors].index(accent_fg)
         except ValueError:
             settings_selected_idx = 0
 
-    def apply_accent(color: int) -> None:
-        nonlocal accent_color, shortcut_attr, focus_border_attr, highlight_attr
-        accent_color = clamp(color, 0, max(0, curses.COLORS - 1))
+    def apply_accent(fg_color: int) -> None:
+        nonlocal accent_fg, shortcut_attr, focus_border_attr, highlight_attr
+        accent_fg = clamp(fg_color, -1, max(0, curses.COLORS - 1))
         try:
-            curses.init_pair(1, curses.COLOR_BLACK, accent_color)
-            highlight_attr = curses.color_pair(1)
+            curses.init_pair(1, accent_fg, -1)
+            highlight_attr = curses.color_pair(1) | curses.A_BOLD
         except curses.error:
             highlight_attr = curses.A_REVERSE
-        curses.init_pair(2, accent_color, -1)
+        curses.init_pair(2, accent_fg, -1)
         shortcut_attr = curses.color_pair(2) | curses.A_BOLD
-        curses.init_pair(3, accent_color, -1)
+        curses.init_pair(3, accent_fg, -1)
         focus_border_attr = curses.color_pair(3) | curses.A_BOLD
-        config["accent_color"] = accent_color
+        config["accent_color"] = accent_fg
         save_config(config)
 
-    def set_status(message: str, duration: float = 3.0) -> None:
-        nonlocal status, message_clear_time, shortcuts_visible
-        status = message
-        message_clear_time = time.monotonic() + max(0.0, duration)
-        shortcuts_visible = True
+    def set_status(message: str, duration: float = 0.0) -> None:
+        return
 
     while True:
-        # Reset double-press tracking unless the previous key was 'd'
-        if last_key != ord("d"):
-            last_key = None
-
-        now = time.monotonic()
-        if message_clear_time and now >= message_clear_time:
-            status = ""
-            message_clear_time = 0.0
-
         if settings_mode:
             draw_settings_screen(
                 stdscr,
                 available_colors,
                 settings_selected_idx,
-                accent_color,
+                accent_fg,
                 status,
                 highlight_attr,
                 shortcut_attr,
@@ -542,7 +616,6 @@ def main(stdscr):
             if key in (ord("q"), ord("Q")):
                 settings_mode = False
                 settings_view = "menu"
-                set_status("Back to bookmarks.", 1.5)
                 continue
             if not available_colors:
                 continue
@@ -557,9 +630,8 @@ def main(stdscr):
                 settings_selected_idx = (settings_selected_idx + 1) % len(available_colors)
                 continue
             if key in (curses.ascii.LF, curses.ascii.CR, curses.KEY_ENTER, ord(" ")):
-                code, name = available_colors[settings_selected_idx]
-                apply_accent(code)
-                set_status(f"Accent set to {name} ({code}).", 2.5)
+                fg_code = available_colors[settings_selected_idx][0]
+                apply_accent(fg_code)
                 continue
             continue
 
@@ -634,32 +706,14 @@ def main(stdscr):
                 focus = "list"
             last_key = None
             continue
-        if key == ord("d") and last_key == ord("d"):
-            if not display_items:
-                set_status("Nothing to delete.")
-                last_key = None
-                continue
-            original_index, removed = display_items[selected]
-            bookmarks.pop(original_index)
-            display_items = [
-                (idx, bm)
-                for idx, bm in enumerate(bookmarks)
-                if (not folder_filter)
-                or bm.get("folder", "General").lower() == folder_filter.lower()
-            ]
-            selected = clamp(selected, 0, max(0, len(display_items) - 1))
-            set_status(f"Deleted '{removed.get('title', '')}'.")
-            last_key = None
-            continue
         if key in (ord("q"), ord("Q")):
             break
         if key in (ord("s"), ord("S")):
             settings_mode = True
             last_key = None
-            set_status("Settings.", 1.5)
             if available_colors:
                 try:
-                    settings_selected_idx = [code for code, _ in available_colors].index(accent_color)
+                    settings_selected_idx = [code for code, _ in available_colors].index(accent_fg)
                 except ValueError:
                     settings_selected_idx = 0
             continue
@@ -737,33 +791,33 @@ def main(stdscr):
                     last_folder = new_folder
                     set_status(f"Folder set to '{new_folder}'.")
                 elif idx == 1:
-                    title = prompt_input(stdscr, "Edit title:", current.get("title", ""))
+                    title = prompt_input(stdscr, "Edit title", current.get("title", ""))
                     if not title:
                         set_status("Edit canceled (empty title).")
                         continue
                     bookmarks[original_index]["title"] = title
                     set_status(f"Updated title to '{title}'.")
                 elif idx == 2:
-                    url = prompt_input(stdscr, "Edit URL:", current.get("url", ""))
+                    url = prompt_input(stdscr, "Edit URL", current.get("url", ""))
                     if not url:
                         set_status("Edit canceled (empty URL).")
                         continue
                     bookmarks[original_index]["url"] = url
                     set_status("Updated URL.")
                 else:
-                    note = prompt_input(stdscr, "Edit note:", current.get("note", ""))
+                    note = prompt_input(stdscr, "Edit note", current.get("note", ""))
                     bookmarks[original_index]["note"] = note
                     set_status("Updated note.")
             else:
-                title = prompt_input(stdscr, "Edit title:", current.get("title", ""))
+                title = prompt_input(stdscr, "Edit title", current.get("title", ""))
                 if not title:
                     set_status("Edit canceled (empty title).")
                     continue
-                url = prompt_input(stdscr, "Edit URL:", current.get("url", ""))
+                url = prompt_input(stdscr, "Edit URL", current.get("url", ""))
                 if not url:
                     set_status("Edit canceled (empty URL).")
                     continue
-                note = prompt_input(stdscr, "Edit note:", current.get("note", ""))
+                note = prompt_input(stdscr, "Edit note", current.get("note", ""))
                 bookmarks[original_index] = {
                     "title": title,
                     "url": url,
@@ -807,12 +861,25 @@ def main(stdscr):
                 ]
             selected = clamp(selected, 0, max(0, len(display_items) - 1))
             set_status(f"Moved to '{new_folder}'.")
-        elif key in (ord("D"),):
+        elif key in (ord("d"), ord("D")):
             if not display_items:
-                set_status("Nothing to delete.")
+                status = ""
                 continue
-            confirm = prompt_input(stdscr, "Delete this bookmark? (y/N)", "n")
-            if confirm.lower().startswith("y"):
+            curses.curs_set(0)
+            h, w = stdscr.getmaxyx()
+            msg1 = "Do you really want to delete this entry?"
+            msg2 = "[y/n]"
+            stdscr.move(h - 2, 0)
+            stdscr.clrtoeol()
+            stdscr.addnstr(h - 2, 0, msg1[: w - 1], w - 1)
+            stdscr.move(h - 1, 0)
+            stdscr.clrtoeol()
+            stdscr.addnstr(h - 1, 0, msg2[: w - 1], w - 1)
+            stdscr.refresh()
+            confirm = None
+            while confirm not in (ord("y"), ord("Y"), ord("n"), ord("N")):
+                confirm = stdscr.getch()
+            if confirm in (ord("y"), ord("Y")):
                 original_index, removed = display_items[selected]
                 bookmarks.pop(original_index)
                 display_items = [
@@ -822,9 +889,7 @@ def main(stdscr):
                     or bm.get("folder", "General").lower() == folder_filter.lower()
                 ]
                 selected = clamp(selected, 0, max(0, len(display_items) - 1))
-                set_status(f"Deleted '{removed.get('title', '')}'.")
-            else:
-                set_status("Delete canceled.")
+            status = ""
         elif key == ord("/"):
             new_query = prompt_input(stdscr, "Search (blank=clear)", search_query)
             search_query = new_query.strip()
@@ -849,7 +914,7 @@ def main(stdscr):
             offset = 0
         else:
             pass
-        last_key = key if key == ord("d") else None
+        last_key = None
 
     save_bookmarks(bookmarks)
 
