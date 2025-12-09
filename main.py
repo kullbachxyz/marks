@@ -113,20 +113,20 @@ def draw_shortcuts(stdscr, y: int, width: int, highlight_attr: int) -> None:
         col += len(chunk)
 
 
-def draw_box(stdscr, top: int, left: int, height: int, width: int) -> None:
+def draw_box(stdscr, top: int, left: int, height: int, width: int, attr: int = curses.A_NORMAL) -> None:
     if height < 2 or width < 2:
         return
     right = left + width - 1
     bottom = top + height - 1
-    stdscr.addch(top, left, curses.ACS_ULCORNER)
-    stdscr.hline(top, left + 1, curses.ACS_HLINE, width - 2)
-    stdscr.addch(top, right, curses.ACS_URCORNER)
-    stdscr.addch(bottom, left, curses.ACS_LLCORNER)
-    stdscr.hline(bottom, left + 1, curses.ACS_HLINE, width - 2)
-    stdscr.addch(bottom, right, curses.ACS_LRCORNER)
+    stdscr.addch(top, left, curses.ACS_ULCORNER, attr)
+    stdscr.hline(top, left + 1, curses.ACS_HLINE, width - 2, attr)
+    stdscr.addch(top, right, curses.ACS_URCORNER, attr)
+    stdscr.addch(bottom, left, curses.ACS_LLCORNER, attr)
+    stdscr.hline(bottom, left + 1, curses.ACS_HLINE, width - 2, attr)
+    stdscr.addch(bottom, right, curses.ACS_LRCORNER, attr)
     for y in range(top + 1, bottom):
-        stdscr.addch(y, left, curses.ACS_VLINE)
-        stdscr.addch(y, right, curses.ACS_VLINE)
+        stdscr.addch(y, left, curses.ACS_VLINE, attr)
+        stdscr.addch(y, right, curses.ACS_VLINE, attr)
 
 
 def gather_folders(bookmarks: List[Dict[str, str]]) -> List[str]:
@@ -256,9 +256,14 @@ def draw_ui(
     status: str,
     highlight_attr: int,
     shortcut_attr: int,
+    detail_title: str,
+    detail_lines: List[str],
     folder_filter: str,
     search_query: str,
     shortcuts_visible: bool,
+    focus_detail: bool,
+    detail_selected: int,
+    focus_border_attr: int,
 ) -> Tuple[int, int]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
@@ -293,7 +298,8 @@ def draw_ui(
         stdscr.addnstr(1, text_x, header[: max(0, w - text_x - 2)], max(0, w - text_x - 2), shortcut_attr)
 
     # List pane with box
-    draw_box(stdscr, list_start_y, 0, body_height, list_width)
+    list_border_attr = focus_border_attr if not focus_detail else curses.A_NORMAL
+    draw_box(stdscr, list_start_y, 0, body_height, list_width, list_border_attr)
     visible = display_items[offset : offset + list_height]
     for idx, (absolute_idx, bookmark) in enumerate(visible):
         y = list_start_y + 1 + idx
@@ -304,17 +310,12 @@ def draw_ui(
 
     # Detail pane with box
     if detail_width >= 6:
-        draw_box(stdscr, list_start_y, list_width, body_height, detail_width)
-        if display_items and 0 <= selected < len(display_items):
-            _, current = display_items[selected]
-            detail_lines = [
-                f"Folder: {current.get('folder', '')}",
-                f"Title:  {current.get('title', '')}",
-                f"URL:    {current.get('url', '')}",
-                f"Note:   {current.get('note', '')}",
-            ]
+        detail_border_attr = focus_border_attr if focus_detail else curses.A_NORMAL
+        draw_box(stdscr, list_start_y, list_width, body_height, detail_width, detail_border_attr)
+        if detail_lines:
             for i, line in enumerate(detail_lines[: body_height - 2]):
-                stdscr.addnstr(list_start_y + 1 + i, list_width + 1, line, detail_width - 2)
+                attr = highlight_attr if focus_detail and i == detail_selected else curses.A_NORMAL
+                stdscr.addnstr(list_start_y + 1 + i, list_width + 1, line.ljust(detail_width - 2), detail_width - 2, attr)
 
     stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
     stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
@@ -335,9 +336,12 @@ def main(stdscr):
         highlight_attr = curses.color_pair(1)
         curses.init_pair(2, 6, -1)
         shortcut_attr = curses.color_pair(2) | curses.A_BOLD
+        curses.init_pair(3, 6, -1)
+        focus_border_attr = curses.color_pair(3) | curses.A_BOLD
     except curses.error:
         highlight_attr = curses.A_REVERSE
         shortcut_attr = curses.A_BOLD
+        focus_border_attr = curses.A_BOLD
 
     bookmarks = load_bookmarks()
     selected = 0
@@ -349,6 +353,8 @@ def main(stdscr):
     last_key = None
     message_clear_time = 0.0
     shortcuts_visible = True
+    focus = "list"
+    detail_selected = 0
 
     def set_status(message: str, duration: float = 3.0) -> None:
         nonlocal status, message_clear_time, shortcuts_visible
@@ -390,6 +396,25 @@ def main(stdscr):
             ]
         total = len(display_items)
         selected = clamp(selected, 0, max(0, total - 1))
+        # Precompute layout to know if detail pane is available
+        h, w = stdscr.getmaxyx()
+        header_height = 3
+        footer_rows = 3
+        body_height = max(3, h - footer_rows - header_height)
+        list_width = min(max(20, int(w * 0.55)), max(10, w))
+        detail_width = max(0, w - list_width)
+        detail_lines: List[str] = []
+        detail_title = ""
+        if detail_width >= 6 and display_items and 0 <= selected < len(display_items):
+            _, current = display_items[selected]
+            detail_title = current.get("title", "")
+            detail_lines = [
+                f"Folder: {current.get('folder', '')}",
+                f"Title:  {current.get('title', '')}",
+                f"URL:    {current.get('url', '')}",
+                f"Note:   {current.get('note', '')}",
+            ]
+        detail_selected = clamp(detail_selected, 0, max(0, len(detail_lines) - 1))
         list_height, _ = draw_ui(
             stdscr,
             display_items,
@@ -398,13 +423,26 @@ def main(stdscr):
             status,
             highlight_attr,
             shortcut_attr,
+            detail_title,
+            detail_lines,
             folder_filter,
             search_query,
             shortcuts_visible,
+            focus == "detail",
+            detail_selected,
+            focus_border_attr,
         )
         offset = ensure_visible(selected, offset, list_height)
 
         key = stdscr.getch()
+        if key in (9, curses.KEY_BTAB):
+            if focus == "list" and detail_width >= 6 and detail_lines:
+                focus = "detail"
+                detail_selected = clamp(detail_selected, 0, max(0, len(detail_lines) - 1))
+            else:
+                focus = "list"
+            last_key = None
+            continue
         if key == ord("d") and last_key == ord("d"):
             if not display_items:
                 set_status("Nothing to delete.")
@@ -425,9 +463,17 @@ def main(stdscr):
         if key in (ord("q"), ord("Q")):
             break
         elif key in (ord("k"), curses.KEY_UP):
-            selected -= 1
+            if focus == "detail":
+                detail_selected -= 1
+                detail_selected = clamp(detail_selected, 0, max(0, len(detail_lines) - 1))
+            else:
+                selected -= 1
         elif key in (ord("j"), curses.KEY_DOWN):
-            selected += 1
+            if focus == "detail":
+                detail_selected += 1
+                detail_selected = clamp(detail_selected, 0, max(0, len(detail_lines) - 1))
+            else:
+                selected += 1
         elif key in (ord("g"),):
             selected = 0
         elif key in (ord("G"),):
@@ -479,23 +525,52 @@ def main(stdscr):
                 continue
             original_index, current = display_items[selected]
             folder = current.get("folder", "General")
-            title = prompt_input(stdscr, "Edit title", current.get("title", ""))
-            if not title:
-                set_status("Edit canceled (empty title).")
-                continue
-            url = prompt_input(stdscr, "Edit URL", current.get("url", ""))
-            if not url:
-                set_status("Edit canceled (empty URL).")
-                continue
-            note = prompt_input(stdscr, "Edit note", current.get("note", ""))
-            bookmarks[original_index] = {
-                "title": title,
-                "url": url,
-                "folder": folder,
-                "note": note,
-            }
-            last_folder = folder
-            set_status(f"Updated '{title}'.")
+            if focus == "detail" and detail_lines:
+                idx = clamp(detail_selected, 0, len(detail_lines) - 1)
+                if idx == 0:
+                    new_folder = prompt_folder(stdscr, bookmarks, folder)
+                    if not new_folder:
+                        set_status("Edit canceled (empty folder).")
+                        continue
+                    bookmarks[original_index]["folder"] = new_folder
+                    last_folder = new_folder
+                    set_status(f"Folder set to '{new_folder}'.")
+                elif idx == 1:
+                    title = prompt_input(stdscr, "Edit title:", current.get("title", ""))
+                    if not title:
+                        set_status("Edit canceled (empty title).")
+                        continue
+                    bookmarks[original_index]["title"] = title
+                    set_status(f"Updated title to '{title}'.")
+                elif idx == 2:
+                    url = prompt_input(stdscr, "Edit URL:", current.get("url", ""))
+                    if not url:
+                        set_status("Edit canceled (empty URL).")
+                        continue
+                    bookmarks[original_index]["url"] = url
+                    set_status("Updated URL.")
+                else:
+                    note = prompt_input(stdscr, "Edit note:", current.get("note", ""))
+                    bookmarks[original_index]["note"] = note
+                    set_status("Updated note.")
+            else:
+                title = prompt_input(stdscr, "Edit title:", current.get("title", ""))
+                if not title:
+                    set_status("Edit canceled (empty title).")
+                    continue
+                url = prompt_input(stdscr, "Edit URL:", current.get("url", ""))
+                if not url:
+                    set_status("Edit canceled (empty URL).")
+                    continue
+                note = prompt_input(stdscr, "Edit note:", current.get("note", ""))
+                bookmarks[original_index] = {
+                    "title": title,
+                    "url": url,
+                    "folder": folder,
+                    "note": note,
+                }
+                last_folder = folder
+                set_status(f"Updated '{title}'.")
         elif key in (ord("m"), ord("M")):
             if not display_items:
                 set_status("Nothing to move.")
@@ -572,7 +647,7 @@ def main(stdscr):
             selected = 0
             offset = 0
         else:
-            set_status("Unknown key. Use the hints below.")
+            pass
         last_key = key if key == ord("d") else None
 
     save_bookmarks(bookmarks)
