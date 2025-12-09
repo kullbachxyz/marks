@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
+import argparse
 import curses
 import json
 import curses.ascii
+import os
+import shutil
+import subprocess
+import sys
 import webbrowser
 from pathlib import Path
 from typing import List, Dict, Tuple
+from html.parser import HTMLParser
 
 
-DATA_FILE = Path("bookmarks.json")
+DATA_FILE = Path(
+    os.environ.get(
+        "MARKS_DATA_FILE",
+        Path.home() / ".local" / "share" / "marks" / "bookmarks.json",
+    )
+)
 
 
 def load_bookmarks() -> List[Dict[str, str]]:
@@ -34,8 +45,24 @@ def load_bookmarks() -> List[Dict[str, str]]:
 
 
 def save_bookmarks(bookmarks: List[Dict[str, str]]) -> None:
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     with DATA_FILE.open("w", encoding="utf-8") as fh:
         json.dump(bookmarks, fh, indent=2)
+
+
+def make_bookmark(title: str, url: str, folder: str = "General", note: str = "") -> Dict[str, str]:
+    cleaned_title = (title or "").strip()
+    cleaned_url = (url or "").strip()
+    if not cleaned_title or not cleaned_url:
+        raise ValueError("Title and URL are required.")
+    cleaned_folder = (folder or "General").strip() or "General"
+    cleaned_note = (note or "").strip()
+    return {
+        "title": cleaned_title,
+        "url": cleaned_url,
+        "folder": cleaned_folder,
+        "note": cleaned_note,
+    }
 
 
 def clamp(value: int, lower: int, upper: int) -> int:
@@ -437,5 +464,238 @@ def main(stdscr):
     save_bookmarks(bookmarks)
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Minimal terminal bookmark manager.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "-a",
+        "--add",
+        action="store_true",
+        help="Add a bookmark from CLI flags and exit (no TUI).",
+    )
+    mode.add_argument(
+        "-l",
+        "--list",
+        action="store_true",
+        help="List bookmarks to stdout (tab-delimited) and exit (no TUI).",
+    )
+    mode.add_argument(
+        "-r",
+        "--rofi",
+        action="store_true",
+        help="Show bookmarks in rofi -dmenu and open the selection (no TUI).",
+    )
+    mode.add_argument(
+        "--import-html",
+        metavar="FILE",
+        help="Import bookmarks from a browser-exported bookmarks HTML file and exit (no TUI).",
+    )
+    parser.add_argument("-n", "--name", help="Bookmark title (required with --add).")
+    parser.add_argument("-u", "--url", help="Bookmark URL (required with --add).")
+    parser.add_argument(
+        "-f",
+        "--folder",
+        default="General",
+        help="Folder name (default: General).",
+    )
+    parser.add_argument("--note", default="", help="Optional note content.")
+    parser.add_argument(
+        "--include-note",
+        action="store_true",
+        help="Include note as a 4th column when using --list.",
+    )
+    return parser.parse_args()
+
+
+def handle_cli_add(args: argparse.Namespace) -> int:
+    if not args.name or not args.url:
+        print("Error: --name and --url are required with --add.", file=sys.stderr)
+        return 2
+
+    bookmarks = load_bookmarks()
+    try:
+        bookmarks.append(make_bookmark(args.name, args.url, args.folder, args.note))
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    save_bookmarks(bookmarks)
+    added = bookmarks[-1]
+    message = f"Added '{added['title']}' to folder '{added['folder']}'."
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "marks", message], check=False)
+    else:
+        print(message)
+    return 0
+
+
+def handle_cli_list(args: argparse.Namespace) -> int:
+    bookmarks = load_bookmarks()
+
+    def clean(value: str) -> str:
+        return (value or "").replace("\n", " ").replace("\t", " ").strip()
+
+    for bm in bookmarks:
+        folder = clean(bm.get("folder", "General") or "General")
+        title = clean(bm.get("title", ""))
+        url = clean(bm.get("url", ""))
+        line = f"[{folder}] {title} - {url}"
+        if args.include_note:
+            note = clean(bm.get("note", ""))
+            if note:
+                line = f"{line} | {note}"
+        print(line.strip())
+    return 0
+
+
+def handle_cli_rofi(args: argparse.Namespace) -> int:
+    if not shutil.which("rofi"):
+        print("Error: rofi not found. Install rofi or use --list with your launcher.", file=sys.stderr)
+        return 2
+
+    bookmarks = load_bookmarks()
+
+    def clean(value: str) -> str:
+        return (value or "").replace("\n", " ").replace("\t", " ").strip()
+
+    entries = []
+    for bm in bookmarks:
+        folder = clean(bm.get("folder", "General") or "General")
+        title = clean(bm.get("title", ""))
+        url = clean(bm.get("url", ""))
+        if not url:
+            continue
+        line = f"[{folder}] {title} - {url}"
+        entries.append(line.strip())
+
+    if not entries:
+        print("No bookmarks to show.", file=sys.stderr)
+        return 1
+
+    proc = subprocess.run(
+        ["rofi", "-dmenu", "-p", "Bookmark", "-i"],
+        input="\n".join(entries),
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return 1
+
+    choice = proc.stdout.strip()
+    if not choice:
+        return 1
+
+    if " - " in choice:
+        _, url = choice.rsplit(" - ", 1)
+    else:
+        url = choice
+    url = url.strip()
+    if not url:
+        print("Selected entry missing URL.", file=sys.stderr)
+        return 2
+
+    opener = ["xdg-open", url] if shutil.which("xdg-open") else None
+    if opener:
+        subprocess.run(opener, check=False)
+    else:
+        webbrowser.open(url)
+    return 0
+
+
+class BookmarkHTMLParser(HTMLParser):
+    def __init__(self, standard_folders: set[str]):
+        super().__init__()
+        self.standard_folders = {name.lower() for name in standard_folders}
+        self.folder_stack: List[str] = []
+        self.bookmarks: List[Dict[str, str]] = []
+        self._capture_data = False
+        self._current_link: Dict[str, str] = {}
+        self._current_folder: str = ""
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+        if tag.lower() == "h3":
+            self._capture_data = True
+            self._current_folder = ""
+        elif tag.lower() == "a":
+            href = attrs_dict.get("href", "")
+            self._current_link = {"url": href, "title": "", "folder": ""}
+            self._capture_data = True
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "h3":
+            folder_name = self._current_folder.strip()
+            self._capture_data = False
+            self._current_folder = ""
+            if folder_name:
+                if folder_name.lower() not in self.standard_folders:
+                    self.folder_stack.append(folder_name)
+        elif tag.lower() == "dl":
+            if self.folder_stack:
+                self.folder_stack.pop()
+        elif tag.lower() == "a":
+            self._capture_data = False
+            folder = self.folder_stack[-1] if self.folder_stack else "Import"
+            title = self._current_link.get("title", "").strip()
+            url = self._current_link.get("url", "").strip()
+            if url and title:
+                self.bookmarks.append({"title": title, "url": url, "folder": folder, "note": ""})
+            self._current_link = {}
+
+    def handle_data(self, data):
+        if not self._capture_data:
+            return
+        if self._current_link:
+            self._current_link["title"] = self._current_link.get("title", "") + data
+        else:
+            self._current_folder += data
+
+
+def import_bookmarks_html(path: Path) -> List[Dict[str, str]]:
+    standard = {
+        "bookmarks toolbar",
+        "bookmark toolbar",
+        "bookmarks bar",
+        "bookmarks menu",
+        "other bookmarks",
+        "other favourites",
+    }
+    parser = BookmarkHTMLParser(standard)
+    parser.feed(path.read_text(encoding="utf-8", errors="ignore"))
+    return parser.bookmarks
+
+
+def handle_cli_import(args: argparse.Namespace) -> int:
+    source = Path(args.import_html)
+    if not source.exists():
+        print(f"Error: file not found: {source}", file=sys.stderr)
+        return 2
+
+    imported = import_bookmarks_html(source)
+    if not imported:
+        print("No bookmarks found in the HTML file.", file=sys.stderr)
+        return 1
+
+    bookmarks = load_bookmarks()
+    bookmarks.extend(imported)
+    save_bookmarks(bookmarks)
+    message = f"Imported {len(imported)} bookmarks from {source.name}."
+    if shutil.which("notify-send"):
+        subprocess.run(["notify-send", "marks", message], check=False)
+    else:
+        print(message)
+    return 0
+
+
 if __name__ == "__main__":
+    cli_args = parse_args()
+    if cli_args.import_html:
+        raise SystemExit(handle_cli_import(cli_args))
+    if cli_args.rofi:
+        raise SystemExit(handle_cli_rofi(cli_args))
+    if cli_args.list:
+        raise SystemExit(handle_cli_list(cli_args))
+    if cli_args.add:
+        raise SystemExit(handle_cli_add(cli_args))
+
     curses.wrapper(main)
