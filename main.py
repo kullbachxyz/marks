@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 import webbrowser
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -19,6 +20,29 @@ DATA_FILE = Path(
         Path.home() / ".local" / "share" / "marks" / "bookmarks.json",
     )
 )
+
+SHORTCUTS_SEGMENTS = [
+    ("j/k", True),
+    (" Move  ", False),
+    ("g/G", True),
+    (" Top/Bottom  ", False),
+    ("/", True),
+    (" Search  ", False),
+    ("f", True),
+    (" Folder  ", False),
+    ("a", True),
+    (" Add  ", False),
+    ("e", True),
+    (" Edit  ", False),
+    ("m", True),
+    (" Move folder  ", False),
+    ("o", True),
+    (" Open  ", False),
+    ("D/dd", True),
+    (" Delete  ", False),
+    ("q", True),
+    (" Quit", False),
+]
 
 
 def load_bookmarks() -> List[Dict[str, str]]:
@@ -77,6 +101,34 @@ def ensure_visible(selected: int, offset: int, list_height: int) -> int:
     return offset
 
 
+def draw_shortcuts(stdscr, y: int, width: int, highlight_attr: int) -> None:
+    col = 0
+    max_width = max(1, width)
+    for text, highlighted in SHORTCUTS_SEGMENTS:
+        if col >= max_width:
+            break
+        chunk = text[: max_width - col]
+        attr = highlight_attr if highlighted else curses.A_NORMAL
+        stdscr.addnstr(y, col, chunk, max_width - col, attr)
+        col += len(chunk)
+
+
+def draw_box(stdscr, top: int, left: int, height: int, width: int) -> None:
+    if height < 2 or width < 2:
+        return
+    right = left + width - 1
+    bottom = top + height - 1
+    stdscr.addch(top, left, curses.ACS_ULCORNER)
+    stdscr.hline(top, left + 1, curses.ACS_HLINE, width - 2)
+    stdscr.addch(top, right, curses.ACS_URCORNER)
+    stdscr.addch(bottom, left, curses.ACS_LLCORNER)
+    stdscr.hline(bottom, left + 1, curses.ACS_HLINE, width - 2)
+    stdscr.addch(bottom, right, curses.ACS_LRCORNER)
+    for y in range(top + 1, bottom):
+        stdscr.addch(y, left, curses.ACS_VLINE)
+        stdscr.addch(y, right, curses.ACS_VLINE)
+
+
 def gather_folders(bookmarks: List[Dict[str, str]]) -> List[str]:
     folders = sorted({bm.get("folder", "General") or "General" for bm in bookmarks})
     return folders or ["General"]
@@ -85,25 +137,27 @@ def gather_folders(bookmarks: List[Dict[str, str]]) -> List[str]:
 def prompt_input(stdscr, prompt: str, default: str = "") -> str:
     curses.curs_set(1)
     h, w = stdscr.getmaxyx()
-    # Clear footer lines to avoid visual noise during input
-    for y in (h - 2, h - 1):
-        stdscr.move(y, 0)
-        stdscr.clrtoeol()
+    prompt_y = h - 2  # status line; keep shortcuts visible on last line
+    if prompt_y < 0:
+        curses.curs_set(0)
+        return ""
+    stdscr.move(prompt_y, 0)
+    stdscr.clrtoeol()
 
     prompt_text = f"{prompt} "
-    stdscr.addnstr(h - 1, 0, prompt_text, w - 1)
+    stdscr.addnstr(prompt_y, 0, prompt_text, w - 1)
     max_len = max(1, w - len(prompt_text) - 1)
     buf = list(default)
     pos = len(buf)
 
     while True:
         display = "".join(buf)
-        stdscr.addnstr(h - 1, len(prompt_text), display[: max_len], max_len)
+        stdscr.addnstr(prompt_y, len(prompt_text), display[: max_len], max_len)
         # Clear any trailing characters from previous longer inputs
         if len(display) < max_len:
-            stdscr.addnstr(h - 1, len(prompt_text) + len(display), " " * (max_len - len(display)), max_len - len(display))
+            stdscr.addnstr(prompt_y, len(prompt_text) + len(display), " " * (max_len - len(display)), max_len - len(display))
         cursor_col = len(prompt_text) + min(pos, max_len - 1)
-        stdscr.move(h - 1, cursor_col)
+        stdscr.move(prompt_y, cursor_col)
         stdscr.refresh()
 
         ch = stdscr.getch()
@@ -201,14 +255,22 @@ def draw_ui(
     offset: int,
     status: str,
     highlight_attr: int,
+    shortcut_attr: int,
     folder_filter: str,
     search_query: str,
+    shortcuts_visible: bool,
 ) -> Tuple[int, int]:
     stdscr.erase()
     h, w = stdscr.getmaxyx()
-    list_height = max(1, h - 3)
+    header_height = 3  # boxed header
+    footer_rows = 3  # separator + status + shortcuts
+    body_height = max(3, h - footer_rows - header_height)
+    list_height = max(1, body_height - 2)
     list_width = max(20, int(w * 0.55))
-    detail_width = max(0, w - list_width - 2)
+    list_width = min(list_width, max(10, w))
+    detail_width = max(0, w - list_width)
+    footer_y = h - footer_rows
+    list_start_y = header_height
 
     header_parts = ["Bookmarks"]
     if folder_filter:
@@ -216,20 +278,33 @@ def draw_ui(
     if search_query:
         header_parts.append(f"/{search_query}")
     header = " ".join(header_parts)
-    stdscr.addnstr(0, 0, header, w - 1)
-    stdscr.hline(1, 0, "-", w)
+    # Draw full-width box header
+    stdscr.addch(0, 0, curses.ACS_ULCORNER)
+    stdscr.hline(0, 1, curses.ACS_HLINE, max(0, w - 2))
+    stdscr.addch(0, max(0, w - 1), curses.ACS_URCORNER)
+    stdscr.addch(header_height - 1, 0, curses.ACS_LLCORNER)
+    stdscr.hline(header_height - 1, 1, curses.ACS_HLINE, max(0, w - 2))
+    stdscr.addch(header_height - 1, max(0, w - 1), curses.ACS_LRCORNER)
+    for y in range(1, header_height - 1):
+        stdscr.addch(y, 0, curses.ACS_VLINE)
+        stdscr.addch(y, max(0, w - 1), curses.ACS_VLINE)
+    if header:
+        text_x = max(2, (w - len(header)) // 2)
+        stdscr.addnstr(1, text_x, header[: max(0, w - text_x - 2)], max(0, w - text_x - 2), shortcut_attr)
 
+    # List pane with box
+    draw_box(stdscr, list_start_y, 0, body_height, list_width)
     visible = display_items[offset : offset + list_height]
     for idx, (absolute_idx, bookmark) in enumerate(visible):
-        y = 2 + idx
+        y = list_start_y + 1 + idx
         folder = bookmark.get("folder", "General")
         line = f"{absolute_idx + 1:>3} [{folder}] {bookmark.get('title', '')}"
         attr = highlight_attr if (offset + idx) == selected else curses.A_NORMAL
-        stdscr.addnstr(y, 0, line.ljust(list_width - 1), list_width - 1, attr)
+        stdscr.addnstr(y, 1, line.ljust(list_width - 2), list_width - 2, attr)
 
-    if detail_width > 0:
-        for y in range(2, 2 + list_height):
-            stdscr.addch(y, list_width, "|")
+    # Detail pane with box
+    if detail_width >= 6:
+        draw_box(stdscr, list_start_y, list_width, body_height, detail_width)
         if display_items and 0 <= selected < len(display_items):
             _, current = display_items[selected]
             detail_lines = [
@@ -238,18 +313,16 @@ def draw_ui(
                 f"URL:    {current.get('url', '')}",
                 f"Note:   {current.get('note', '')}",
             ]
-            for i, line in enumerate(detail_lines):
-                if 2 + i < h - 2:
-                    stdscr.addnstr(2 + i, list_width + 2, line, detail_width)
+            for i, line in enumerate(detail_lines[: body_height - 2]):
+                stdscr.addnstr(list_start_y + 1 + i, list_width + 1, line, detail_width - 2)
 
-    stdscr.hline(h - 3, 0, "-", w)
-    stdscr.addnstr(h - 2, 0, status[: w - 1], w - 1)
-    stdscr.addnstr(
-        h - 1,
-        0,
-        "[j/k] Move  [g/G] Top/Bottom  [/] Search  [a] Add  [e] Edit  [m] Move folder  [D] Delete(confirm)  [dd] Delete  [f] Folder  [o] Open  [q] Quit",
-        w - 1,
-    )
+    stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
+    stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
+    if shortcuts_visible:
+        draw_shortcuts(stdscr, footer_y + 2, w - 1, shortcut_attr)
+    else:
+        stdscr.move(footer_y + 2, 0)
+        stdscr.clrtoeol()
     stdscr.refresh()
     return list_height, list_width
 
@@ -260,22 +333,38 @@ def main(stdscr):
     try:
         curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
         highlight_attr = curses.color_pair(1)
+        curses.init_pair(2, 6, -1)
+        shortcut_attr = curses.color_pair(2) | curses.A_BOLD
     except curses.error:
         highlight_attr = curses.A_REVERSE
+        shortcut_attr = curses.A_BOLD
 
     bookmarks = load_bookmarks()
     selected = 0
     offset = 0
-    status = "Ready"
+    status = ""
     folder_filter = ""
     last_folder = folder_filter or "General"
     search_query = ""
     last_key = None
+    message_clear_time = 0.0
+    shortcuts_visible = True
+
+    def set_status(message: str, duration: float = 3.0) -> None:
+        nonlocal status, message_clear_time, shortcuts_visible
+        status = message
+        message_clear_time = time.monotonic() + max(0.0, duration)
+        shortcuts_visible = True
 
     while True:
         # Reset double-press tracking unless the previous key was 'd'
         if last_key != ord("d"):
             last_key = None
+
+        now = time.monotonic()
+        if message_clear_time and now >= message_clear_time:
+            status = ""
+            message_clear_time = 0.0
 
         display_items = [
             (idx, bm)
@@ -308,15 +397,17 @@ def main(stdscr):
             offset,
             status,
             highlight_attr,
+            shortcut_attr,
             folder_filter,
             search_query,
+            shortcuts_visible,
         )
         offset = ensure_visible(selected, offset, list_height)
 
         key = stdscr.getch()
         if key == ord("d") and last_key == ord("d"):
             if not display_items:
-                status = "Nothing to delete."
+                set_status("Nothing to delete.")
                 last_key = None
                 continue
             original_index, removed = display_items[selected]
@@ -328,7 +419,7 @@ def main(stdscr):
                 or bm.get("folder", "General").lower() == folder_filter.lower()
             ]
             selected = clamp(selected, 0, max(0, len(display_items) - 1))
-            status = f"Deleted '{removed.get('title', '')}'."
+            set_status(f"Deleted '{removed.get('title', '')}'.")
             last_key = None
             continue
         if key in (ord("q"), ord("Q")):
@@ -347,28 +438,28 @@ def main(stdscr):
             selected = max(0, total - 1)
         elif key in (ord("o"), ord("O")):
             if not display_items:
-                status = "Nothing to open."
+                set_status("Nothing to open.")
                 continue
             _, current = display_items[selected]
             url = current.get("url", "")
             if not url:
-                status = "Bookmark has no URL."
+                set_status("Bookmark has no URL.")
                 continue
             try:
                 webbrowser.open(url)
-                status = f"Opened {url}"
+                set_status(f"Opened {url}")
             except Exception as exc:  # pragma: no cover - defensive
-                status = f"Failed to open: {exc}"
+                set_status(f"Failed to open: {exc}")
         elif key in (ord("a"), ord("A")):
             default_folder = last_folder or folder_filter or "General"
             folder = prompt_folder(stdscr, bookmarks, default_folder)
             title = prompt_input(stdscr, "Title")
             if not title:
-                status = "Add canceled (empty title)."
+                set_status("Add canceled (empty title).")
                 continue
             url = prompt_input(stdscr, "URL")
             if not url:
-                status = "Add canceled (empty URL)."
+                set_status("Add canceled (empty URL).")
                 continue
             note = prompt_input(stdscr, "Note (optional)", "")
             bookmarks.append({"title": title, "url": url, "folder": folder, "note": note})
@@ -381,20 +472,20 @@ def main(stdscr):
             ]
             if display_items:
                 selected = len(display_items) - 1
-            status = f"Added '{title}'."
+            set_status(f"Added '{title}'.")
         elif key in (ord("e"), ord("E")):
             if not display_items:
-                status = "Nothing to edit."
+                set_status("Nothing to edit.")
                 continue
             original_index, current = display_items[selected]
             folder = current.get("folder", "General")
             title = prompt_input(stdscr, "Edit title", current.get("title", ""))
             if not title:
-                status = "Edit canceled (empty title)."
+                set_status("Edit canceled (empty title).")
                 continue
             url = prompt_input(stdscr, "Edit URL", current.get("url", ""))
             if not url:
-                status = "Edit canceled (empty URL)."
+                set_status("Edit canceled (empty URL).")
                 continue
             note = prompt_input(stdscr, "Edit note", current.get("note", ""))
             bookmarks[original_index] = {
@@ -404,15 +495,15 @@ def main(stdscr):
                 "note": note,
             }
             last_folder = folder
-            status = f"Updated '{title}'."
+            set_status(f"Updated '{title}'.")
         elif key in (ord("m"), ord("M")):
             if not display_items:
-                status = "Nothing to move."
+                set_status("Nothing to move.")
                 continue
             original_index, current = display_items[selected]
             new_folder = prompt_folder(stdscr, bookmarks, current.get("folder", "General"))
             if not new_folder:
-                status = "Move canceled (empty folder)."
+                set_status("Move canceled (empty folder).")
                 continue
             bookmarks[original_index]["folder"] = new_folder
             last_folder = new_folder
@@ -436,13 +527,13 @@ def main(stdscr):
                             ]
                         )
                         for token in tokens
-                    )
+                        )
                 ]
             selected = clamp(selected, 0, max(0, len(display_items) - 1))
-            status = f"Moved to '{new_folder}'."
+            set_status(f"Moved to '{new_folder}'.")
         elif key in (ord("D"),):
             if not display_items:
-                status = "Nothing to delete."
+                set_status("Nothing to delete.")
                 continue
             confirm = prompt_input(stdscr, "Delete this bookmark? (y/N)", "n")
             if confirm.lower().startswith("y"):
@@ -455,15 +546,15 @@ def main(stdscr):
                     or bm.get("folder", "General").lower() == folder_filter.lower()
                 ]
                 selected = clamp(selected, 0, max(0, len(display_items) - 1))
-                status = f"Deleted '{removed.get('title', '')}'."
+                set_status(f"Deleted '{removed.get('title', '')}'.")
             else:
-                status = "Delete canceled."
+                set_status("Delete canceled.")
         elif key == ord("/"):
             new_query = prompt_input(stdscr, "Search (blank=clear)", search_query)
             search_query = new_query.strip()
             selected = 0
             offset = 0
-            status = "Search cleared." if not search_query else f"Searching for '{search_query}'."
+            set_status("Search cleared." if not search_query else f"Searching for '{search_query}'.")
         elif key in (ord("f"), ord("F")):
             folders = gather_folders(bookmarks)
             options = ["<All>"] + folders
@@ -474,14 +565,14 @@ def main(stdscr):
             selection = folder_picker(stdscr, options, initial_idx)
             if selection == "<All>":
                 folder_filter = ""
-                status = "Filter cleared."
+                set_status("Filter cleared.")
             else:
                 folder_filter = selection
-                status = f"Filtering by '{folder_filter}'."
+                set_status(f"Filtering by '{folder_filter}'.")
             selected = 0
             offset = 0
         else:
-            status = "Unknown key. Use the hints below."
+            set_status("Unknown key. Use the hints below.")
         last_key = key if key == ord("d") else None
 
     save_bookmarks(bookmarks)
