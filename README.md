@@ -7,11 +7,11 @@ Minimal ncurses-style bookmark manager (keyboard only).
 <table>
   <tr>
     <td><img src="screenshot/screenshot_main_view.png" alt="Main view" width="420"></td>
-    <td>![Edit prompt](screenshot/screenshot_edit_url.png)</td>
+    <td><img src="screenshot/screenshot_edit_url.png" alt="Edit prompt" width="420"></td>
   </tr>
   <tr>
-    <td>![Color settings](screenshot/screenshot_color_settings.png)</td>
-    <td>![Rofi picker](screenshot_rofi_picker.png)</td>
+    <td><img src="screenshot/screenshot_color_settings.png" alt="Color settings" width="420"></td>
+    <td><img src="screenshot/screenshot_rofi_picker.png" alt="Rofi picker" width="420"></td>
   </tr>
 </table>
 
