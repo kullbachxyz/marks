@@ -48,7 +48,7 @@ SHORTCUTS_SEGMENTS = [
     ("m", True),
     (" Move folder  ", False),
     ("o", True),
-    (" Open  ", False),
+    (" Open in browser  ", False),
     ("d", True),
     (" Delete  ", False),
     ("q", True),
