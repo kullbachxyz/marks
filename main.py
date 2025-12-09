@@ -386,7 +386,11 @@ def draw_settings_screen(
 
     # Update footer only
     stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
+    stdscr.move(footer_y + 1, 0)
+    stdscr.clrtoeol()
     stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
+    stdscr.move(footer_y + 2, 0)
+    stdscr.clrtoeol()
     draw_segments_line(stdscr, footer_y + 2, w - 1, segments, shortcut_attr)
 
     if view != "colors":
@@ -439,7 +443,11 @@ def draw_settings_screen(
 
     # Footer for picker
     stdscr.hline(footer_y_full, 0, curses.ACS_HLINE, w)
+    stdscr.move(footer_y_full + 1, 0)
+    stdscr.clrtoeol()
     stdscr.addnstr(footer_y_full + 1, 0, status[: w - 1], w - 1)
+    stdscr.move(footer_y_full + 2, 0)
+    stdscr.clrtoeol()
     draw_segments_line(stdscr, footer_y_full + 2, w - 1, segments, shortcut_attr)
     stdscr.refresh()
 
