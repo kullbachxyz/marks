@@ -21,6 +21,17 @@ DATA_FILE = Path(
     )
 )
 
+CONFIG_FILE = Path.home() / ".config" / "marks" / "config"
+TERM_COLORS = [
+    (1, "Red"),
+    (2, "Green"),
+    (3, "Yellow"),
+    (4, "Blue"),
+    (5, "Magenta"),
+    (6, "Cyan"),
+    (7, "White"),
+]
+
 SHORTCUTS_SEGMENTS = [
     ("j/k", True),
     (" Move  ", False),
@@ -74,6 +85,25 @@ def save_bookmarks(bookmarks: List[Dict[str, str]]) -> None:
         json.dump(bookmarks, fh, indent=2)
 
 
+def load_config() -> Dict[str, int]:
+    try:
+        with CONFIG_FILE.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+            if not isinstance(data, dict):
+                return {}
+            return data
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def save_config(config: Dict[str, int]) -> None:
+    CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with CONFIG_FILE.open("w", encoding="utf-8") as fh:
+        json.dump(config, fh, indent=2)
+
+
 def make_bookmark(title: str, url: str, folder: str = "General", note: str = "") -> Dict[str, str]:
     cleaned_title = (title or "").strip()
     cleaned_url = (url or "").strip()
@@ -109,6 +139,18 @@ def draw_shortcuts(stdscr, y: int, width: int, highlight_attr: int) -> None:
             break
         chunk = text[: max_width - col]
         attr = highlight_attr if highlighted else curses.A_NORMAL
+        stdscr.addnstr(y, col, chunk, max_width - col, attr)
+        col += len(chunk)
+
+
+def draw_segments_line(stdscr, y: int, width: int, segments: List[Tuple[str, bool]], key_attr: int) -> None:
+    col = 0
+    max_width = max(1, width)
+    for text, highlighted in segments:
+        if col >= max_width:
+            break
+        chunk = text[: max_width - col]
+        attr = key_attr if highlighted else curses.A_NORMAL
         stdscr.addnstr(y, col, chunk, max_width - col, attr)
         col += len(chunk)
 
@@ -328,15 +370,95 @@ def draw_ui(
     return list_height, list_width
 
 
+def draw_settings_screen(
+    stdscr,
+    colors: List[Tuple[int, str]],
+    selected_idx: int,
+    accent_color: int,
+    status: str,
+    highlight_attr: int,
+    shortcut_attr: int,
+    view: str,
+) -> None:
+    h, w = stdscr.getmaxyx()
+    footer_y = h - 3
+    segments = [("q", True), (" Quit  ", False), ("c", True), (" Color", False)]
+
+    # Update footer only
+    stdscr.hline(footer_y, 0, curses.ACS_HLINE, w)
+    stdscr.addnstr(footer_y + 1, 0, status[: w - 1], w - 1)
+    draw_segments_line(stdscr, footer_y + 2, w - 1, segments, shortcut_attr)
+
+    if view != "colors":
+        stdscr.refresh()
+        return
+
+    # Full-width color picker screen
+    stdscr.erase()
+    header_height = 3
+    footer_rows = 3
+    body_height = max(4, h - footer_rows - header_height)
+    footer_y_full = h - footer_rows
+
+    # Header
+    stdscr.addch(0, 0, curses.ACS_ULCORNER)
+    stdscr.hline(0, 1, curses.ACS_HLINE, max(0, w - 2))
+    stdscr.addch(0, max(0, w - 1), curses.ACS_URCORNER)
+    stdscr.addch(header_height - 1, 0, curses.ACS_LLCORNER)
+    stdscr.hline(header_height - 1, 1, curses.ACS_HLINE, max(0, w - 2))
+    stdscr.addch(header_height - 1, max(0, w - 1), curses.ACS_LRCORNER)
+    for y in range(1, header_height - 1):
+        stdscr.addch(y, 0, curses.ACS_VLINE)
+        stdscr.addch(y, max(0, w - 1), curses.ACS_VLINE)
+    title = "Accent Color"
+    text_x = max(2, (w - len(title)) // 2)
+    stdscr.addnstr(1, text_x, title[: max(0, w - text_x - 2)], max(0, w - text_x - 2), shortcut_attr)
+
+    # Body
+    list_start_y = header_height
+    draw_box(stdscr, list_start_y, 0, body_height, w, curses.A_NORMAL)
+    bar_width = min(24, max(8, w // 6))
+    bar_start = max(4, (w - bar_width) // 2)
+    marker_x = max(1, bar_start - 4)
+    max_rows = max(0, (body_height - 2) // 2)
+    for idx, (code, name) in enumerate(colors[: max_rows]):
+        y = list_start_y + 1 + idx * 2
+        marker = "[X]" if code == accent_color else "[ ]"
+        attr = highlight_attr if idx == selected_idx else curses.A_NORMAL
+        stdscr.addnstr(y, marker_x, marker, 3, attr)
+        try:
+            pair_id = 20 + code
+            curses.init_pair(pair_id, curses.COLOR_BLACK, code)
+            bar_attr = curses.color_pair(pair_id)
+        except curses.error:
+            bar_attr = curses.A_REVERSE
+        bar_draw_width = min(bar_width, max(1, w - bar_start - 2))
+        stdscr.addnstr(y, bar_start, " " * bar_draw_width, bar_draw_width, bar_attr)
+        name_x = bar_start + bar_draw_width + 2
+        stdscr.addnstr(y, name_x, name[: max(0, w - name_x - 2)], max(0, w - name_x - 2), attr)
+
+    # Footer for picker
+    stdscr.hline(footer_y_full, 0, curses.ACS_HLINE, w)
+    stdscr.addnstr(footer_y_full + 1, 0, status[: w - 1], w - 1)
+    draw_segments_line(stdscr, footer_y_full + 2, w - 1, segments, shortcut_attr)
+    stdscr.refresh()
+
+
 def main(stdscr):
     curses.curs_set(0)
     curses.use_default_colors()
+    config = load_config()
+    accent_color = (
+        int(config.get("accent_color", 6))
+        if isinstance(config, dict)
+        else 6
+    )
     try:
-        curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+        curses.init_pair(1, curses.COLOR_BLACK, accent_color)
         highlight_attr = curses.color_pair(1)
-        curses.init_pair(2, 6, -1)
+        curses.init_pair(2, accent_color, -1)
         shortcut_attr = curses.color_pair(2) | curses.A_BOLD
-        curses.init_pair(3, 6, -1)
+        curses.init_pair(3, accent_color, -1)
         focus_border_attr = curses.color_pair(3) | curses.A_BOLD
     except curses.error:
         highlight_attr = curses.A_REVERSE
@@ -355,6 +477,30 @@ def main(stdscr):
     shortcuts_visible = True
     focus = "list"
     detail_selected = 0
+    settings_mode = False
+    settings_view = "menu"
+    settings_selected_idx = 0
+    available_colors = [(code, name) for code, name in TERM_COLORS if code < curses.COLORS]
+    if available_colors:
+        try:
+            settings_selected_idx = [code for code, _ in available_colors].index(accent_color)
+        except ValueError:
+            settings_selected_idx = 0
+
+    def apply_accent(color: int) -> None:
+        nonlocal accent_color, shortcut_attr, focus_border_attr, highlight_attr
+        accent_color = clamp(color, 0, max(0, curses.COLORS - 1))
+        try:
+            curses.init_pair(1, curses.COLOR_BLACK, accent_color)
+            highlight_attr = curses.color_pair(1)
+        except curses.error:
+            highlight_attr = curses.A_REVERSE
+        curses.init_pair(2, accent_color, -1)
+        shortcut_attr = curses.color_pair(2) | curses.A_BOLD
+        curses.init_pair(3, accent_color, -1)
+        focus_border_attr = curses.color_pair(3) | curses.A_BOLD
+        config["accent_color"] = accent_color
+        save_config(config)
 
     def set_status(message: str, duration: float = 3.0) -> None:
         nonlocal status, message_clear_time, shortcuts_visible
@@ -371,6 +517,43 @@ def main(stdscr):
         if message_clear_time and now >= message_clear_time:
             status = ""
             message_clear_time = 0.0
+
+        if settings_mode:
+            draw_settings_screen(
+                stdscr,
+                available_colors,
+                settings_selected_idx,
+                accent_color,
+                status,
+                highlight_attr,
+                shortcut_attr,
+                settings_view,
+            )
+            key = stdscr.getch()
+            last_key = None
+            if key in (ord("q"), ord("Q")):
+                settings_mode = False
+                settings_view = "menu"
+                set_status("Back to bookmarks.", 1.5)
+                continue
+            if not available_colors:
+                continue
+            if settings_view == "menu":
+                if key in (ord("c"), ord("C")):
+                    settings_view = "colors"
+                continue
+            if key in (ord("k"), curses.KEY_UP):
+                settings_selected_idx = (settings_selected_idx - 1) % len(available_colors)
+                continue
+            if key in (ord("j"), curses.KEY_DOWN):
+                settings_selected_idx = (settings_selected_idx + 1) % len(available_colors)
+                continue
+            if key in (curses.ascii.LF, curses.ascii.CR, curses.KEY_ENTER, ord(" ")):
+                code, name = available_colors[settings_selected_idx]
+                apply_accent(code)
+                set_status(f"Accent set to {name} ({code}).", 2.5)
+                continue
+            continue
 
         display_items = [
             (idx, bm)
@@ -462,6 +645,16 @@ def main(stdscr):
             continue
         if key in (ord("q"), ord("Q")):
             break
+        if key in (ord("s"), ord("S")):
+            settings_mode = True
+            last_key = None
+            set_status("Settings.", 1.5)
+            if available_colors:
+                try:
+                    settings_selected_idx = [code for code, _ in available_colors].index(accent_color)
+                except ValueError:
+                    settings_selected_idx = 0
+            continue
         elif key in (ord("k"), curses.KEY_UP):
             if focus == "detail":
                 detail_selected -= 1
