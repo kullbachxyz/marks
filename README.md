@@ -4,13 +4,16 @@ Minimal ncurses-style bookmark manager (keyboard only).
 
 ## Screenshots
 
-| Main view | Edit prompt |
-| --- | --- |
-| ![Main view](screenshot/screenshot_main_view.png) | ![Edit URL](screenshot/screenshot_edit_url.png) |
-
-| Color settings | Rofi picker |
-| --- | --- |
-| ![Color settings](screenshot/screenshot_color_settings.png) | ![Rofi picker](screenshot_rofi_picker.png) |
+<table>
+  <tr>
+    <td><img src="screenshot/screenshot_main_view.png" alt="Main view" width="420"></td>
+    <td><img src="screenshot/screenshot_edit_url.png" alt="Edit prompt" width="420"></td>
+  </tr>
+  <tr>
+    <td><img src="screenshot/screenshot_color_settings.png" alt="Color settings" width="420"></td>
+    <td><img src="screenshot/screenshot_rofi_picker.png" alt="Rofi picker" width="420"></td>
+  </tr>
+</table>
 
 ## Run
 
