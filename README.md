@@ -2,6 +2,16 @@
 
 Minimal ncurses-style bookmark manager (keyboard only).
 
+## Screenshots
+
+| Main view | Edit prompt |
+| --- | --- |
+| ![Main view](screenshot/screenshot_main_view.png) | ![Edit URL](screenshot/screenshot_edit_url.png) |
+
+| Color settings | Rofi picker |
+| --- | --- |
+| ![Color settings](screenshot/screenshot_color_settings.png) | ![Rofi picker](screenshot_rofi_picker.png) |
+
 ## Run
 
 ```
@@ -9,6 +19,7 @@ python main.py
 ```
 
 Data is stored at `~/.local/share/marks/bookmarks.json` (override with `MARKS_DATA_FILE` if needed). The file is created automatically on first save.
+Config lives at `~/.config/marks/config` (stores accent color).
 
 ## Keys
 

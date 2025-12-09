@@ -205,6 +205,11 @@ def draw_footer(
     rows: List[List[Tuple[str, bool]]],
     key_attr: int,
 ) -> None:
+    # Clear footer area to avoid leftover margins
+    h = stdscr.getmaxyx()[0]
+    for y in range(footer_y, h):
+        stdscr.move(y, 0)
+        stdscr.clrtoeol()
     stdscr.hline(footer_y, 0, curses.ACS_HLINE, width)
     line_offset = 1
     if status:
