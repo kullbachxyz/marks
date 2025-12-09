@@ -17,7 +17,8 @@ Data is stored at `~/.local/share/marks/bookmarks.json` (override with `MARKS_DA
 - a: add bookmark (folder, title, URL)
 - e: edit selected bookmark (title/URL/note)
 - m: move selected bookmark (Move to folder)
-- d: delete selected bookmark (with confirm)
+- D: delete selected bookmark (with confirm)
+- dd: delete selected bookmark immediately (no confirm)
 - f: filter by folder (blank to show all)
 - o: open selected bookmark in browser
 - /: search (full text: folder/title/url/note)

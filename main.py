@@ -247,7 +247,7 @@ def draw_ui(
     stdscr.addnstr(
         h - 1,
         0,
-        "[j/k] Move  [g/G] Top/Bottom  [/] Search  [a] Add  [e] Edit  [m] Move folder  [d] Delete  [f] Folder  [o] Open  [q] Quit",
+        "[j/k] Move  [g/G] Top/Bottom  [/] Search  [a] Add  [e] Edit  [m] Move folder  [D] Delete(confirm)  [dd] Delete  [f] Folder  [o] Open  [q] Quit",
         w - 1,
     )
     stdscr.refresh()
@@ -270,8 +270,13 @@ def main(stdscr):
     folder_filter = ""
     last_folder = folder_filter or "General"
     search_query = ""
+    last_key = None
 
     while True:
+        # Reset double-press tracking unless the previous key was 'd'
+        if last_key != ord("d"):
+            last_key = None
+
         display_items = [
             (idx, bm)
             for idx, bm in enumerate(bookmarks)
@@ -309,6 +314,23 @@ def main(stdscr):
         offset = ensure_visible(selected, offset, list_height)
 
         key = stdscr.getch()
+        if key == ord("d") and last_key == ord("d"):
+            if not display_items:
+                status = "Nothing to delete."
+                last_key = None
+                continue
+            original_index, removed = display_items[selected]
+            bookmarks.pop(original_index)
+            display_items = [
+                (idx, bm)
+                for idx, bm in enumerate(bookmarks)
+                if (not folder_filter)
+                or bm.get("folder", "General").lower() == folder_filter.lower()
+            ]
+            selected = clamp(selected, 0, max(0, len(display_items) - 1))
+            status = f"Deleted '{removed.get('title', '')}'."
+            last_key = None
+            continue
         if key in (ord("q"), ord("Q")):
             break
         elif key in (ord("k"), curses.KEY_UP):
@@ -418,7 +440,7 @@ def main(stdscr):
                 ]
             selected = clamp(selected, 0, max(0, len(display_items) - 1))
             status = f"Moved to '{new_folder}'."
-        elif key in (ord("d"), ord("D")):
+        elif key in (ord("D"),):
             if not display_items:
                 status = "Nothing to delete."
                 continue
@@ -460,6 +482,7 @@ def main(stdscr):
             offset = 0
         else:
             status = "Unknown key. Use the hints below."
+        last_key = key if key == ord("d") else None
 
     save_bookmarks(bookmarks)
 
