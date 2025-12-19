@@ -40,12 +40,5 @@ Config lives at `~/.config/marks/config` (stores accent color).
 If `~/.local/bin` is on your `PATH`:
 
 ```
-chmod +x main.py
-ln -s /home/ph/code/marks/main.py ~/.local/bin/marks
-```
-
-Or copy instead of symlink:
-
-```
 install -m 755 main.py ~/.local/bin/marks
 ```
