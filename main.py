@@ -10,7 +10,7 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from html.parser import HTMLParser
 
 
@@ -243,7 +243,12 @@ def gather_folders(bookmarks: List[Dict[str, str]]) -> List[str]:
     return folders or ["General"]
 
 
-def prompt_input(stdscr, prompt: str, default: str = "") -> str:
+def prompt_input(
+    stdscr,
+    prompt: str,
+    default: str = "",
+    on_change: Optional[Callable[[str], None]] = None,
+) -> str:
     curses.curs_set(1)
     h, w = stdscr.getmaxyx()
     label_y = h - 2
@@ -251,22 +256,24 @@ def prompt_input(stdscr, prompt: str, default: str = "") -> str:
     if input_y < 0:
         curses.curs_set(0)
         return ""
-    for y in (label_y, input_y):
-        stdscr.move(y, 0)
-        stdscr.clrtoeol()
-
     prompt_label = f"{prompt}:"
     try:
         accent_attr = curses.color_pair(2) | curses.A_BOLD
     except curses.error:
         accent_attr = curses.A_BOLD
-    stdscr.addnstr(label_y, 0, prompt_label[: w - 1], w - 1, accent_attr)
     max_len = max(3, w - 1)  # room for overflow markers
     buf = list(default)
     pos = len(buf)
     view_start = 0
+    changed = True
 
     while True:
+        if changed and on_change is not None:
+            on_change("".join(buf))
+        for y in (label_y, input_y):
+            stdscr.move(y, 0)
+            stdscr.clrtoeol()
+        stdscr.addnstr(label_y, 0, prompt_label[: w - 1], w - 1, accent_attr)
         display_width = max_len - 2
         if pos < view_start:
             view_start = pos
@@ -286,10 +293,12 @@ def prompt_input(stdscr, prompt: str, default: str = "") -> str:
         stdscr.refresh()
 
         ch = stdscr.getch()
+        changed = False
         if ch in (curses.ascii.LF, curses.ascii.CR, curses.KEY_ENTER):
             break
         if ch in (27,):  # ESC cancels
             buf = []
+            changed = True
             break
         if ch in (curses.KEY_LEFT, curses.ascii.STX):
             pos = max(0, pos - 1)
@@ -301,10 +310,12 @@ def prompt_input(stdscr, prompt: str, default: str = "") -> str:
             if pos > 0:
                 buf.pop(pos - 1)
                 pos -= 1
+                changed = True
             continue
         if curses.ascii.isprint(ch):
             buf.insert(pos, chr(ch))
             pos += 1
+            changed = True
 
     curses.curs_set(0)
     return "".join(buf).strip()
@@ -604,6 +615,75 @@ def main(stdscr):
     def set_status(message: str, duration: float = 0.0) -> None:
         return
 
+    def build_display_items(query: str) -> List[Tuple[int, Dict[str, str]]]:
+        items = [
+            (idx, bm)
+            for idx, bm in enumerate(bookmarks)
+            if (not folder_filter)
+            or bm.get("folder", "General").lower() == folder_filter.lower()
+        ]
+        tokens = normalize_search(query)
+        if tokens:
+            items = [
+                item
+                for item in items
+                if all(
+                    token
+                    in " ".join(
+                        [
+                            (item[1].get(field, "") or "").lower()
+                            for field in ("title", "url", "folder", "note")
+                        ]
+                    )
+                    for token in tokens
+                )
+            ]
+        return items
+
+    def render_search_preview(current: str) -> None:
+        nonlocal search_query, selected, offset, detail_selected
+        search_query = current.strip()
+        selected = 0
+        offset = 0
+        detail_selected = 0
+        display_items = build_display_items(search_query)
+        total = len(display_items)
+        selected = clamp(selected, 0, max(0, total - 1))
+        h, w = stdscr.getmaxyx()
+        header_height = 3
+        footer_rows = 3
+        body_height = max(3, h - footer_rows - header_height)
+        list_width = min(max(20, int(w * 0.55)), max(10, w))
+        detail_width = max(0, w - list_width)
+        detail_lines: List[str] = []
+        detail_title = ""
+        if detail_width >= 6 and display_items and 0 <= selected < len(display_items):
+            _, current_item = display_items[selected]
+            detail_title = current_item.get("title", "")
+            detail_lines = [
+                f"Folder: {current_item.get('folder', '')}",
+                f"Title:  {current_item.get('title', '')}",
+                f"URL:    {current_item.get('url', '')}",
+                f"Note:   {current_item.get('note', '')}",
+            ]
+        draw_ui(
+            stdscr,
+            display_items,
+            selected,
+            offset,
+            status,
+            highlight_attr,
+            shortcut_attr,
+            detail_title,
+            detail_lines,
+            folder_filter,
+            search_query,
+            shortcuts_visible,
+            focus == "detail",
+            detail_selected,
+            focus_border_attr,
+        )
+
     while True:
         if settings_mode:
             draw_settings_screen(
@@ -640,28 +720,7 @@ def main(stdscr):
                 continue
             continue
 
-        display_items = [
-            (idx, bm)
-            for idx, bm in enumerate(bookmarks)
-            if (not folder_filter)
-            or bm.get("folder", "General").lower() == folder_filter.lower()
-        ]
-        tokens = normalize_search(search_query)
-        if tokens:
-            display_items = [
-                item
-                for item in display_items
-                if all(
-                    token
-                    in " ".join(
-                        [
-                            (item[1].get(field, "") or "").lower()
-                            for field in ("title", "url", "folder", "note")
-                        ]
-                    )
-                    for token in tokens
-                )
-            ]
+        display_items = build_display_items(search_query)
         total = len(display_items)
         selected = clamp(selected, 0, max(0, total - 1))
         # Precompute layout to know if detail pane is available
@@ -896,7 +955,15 @@ def main(stdscr):
                 selected = clamp(selected, 0, max(0, len(display_items) - 1))
             status = ""
         elif key == ord("/"):
-            new_query = prompt_input(stdscr, "Search (blank=clear)", search_query)
+            search_query = ""
+            selected = 0
+            offset = 0
+            new_query = prompt_input(
+                stdscr,
+                "Search",
+                "",
+                on_change=render_search_preview,
+            )
             search_query = new_query.strip()
             selected = 0
             offset = 0
@@ -1033,7 +1100,7 @@ def handle_cli_rofi(args: argparse.Namespace) -> int:
         return 1
 
     proc = subprocess.run(
-        ["rofi", "-dmenu", "-p", "Bookmark", "-i"],
+        ["rofi", "-dmenu", "-p", "", "-i"],
         input="\n".join(entries),
         text=True,
         capture_output=True,
